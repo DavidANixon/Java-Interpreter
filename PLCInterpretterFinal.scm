@@ -25,7 +25,7 @@
     (cond
       ((eq? 'return (statement-type statement)) (interpret-return statement environment return throw))
       ((eq? 'function (statement-type statement)) (interpret-function statement environment))
-      ((eq? 'funcall (statement-type statement)) (eval-funcall statement environment throw)) ; Needs to return a state
+      ((eq? 'funcall (statement-type statement)) (interpret-funcall (eval-funcall statement environment throw) environment))
       ((eq? 'var (statement-type statement)) (interpret-declare statement environment throw))
       ((eq? '= (statement-type statement)) (interpret-assign statement environment throw))
       ((eq? 'if (statement-type statement)) (interpret-if statement environment return break continue throw))
@@ -34,8 +34,13 @@
       ((eq? 'break (statement-type statement)) (break environment))
       ((eq? 'begin (statement-type statement)) (interpret-block statement environment return break continue throw))
       ((eq? 'throw (statement-type statement)) (interpret-throw statement environment throw))
-      ((eq? 'try (statement-type statement)) (interpret-try statement environment return break continue throw))
+      ((eq? 'try (statement-type statement)) (begin (set-box! throwenv environment)(interpret-try statement environment return break continue throw)))
       (else (myerror "Unknown statement:" (statement-type statement))))))
+
+; Executes the function then returns the state
+(define interpret-funcall
+  (lambda (function environment)
+    environment))
 
 ; Evaluates a function and returns the value
 (define eval-funcall
@@ -74,6 +79,7 @@
       ((exists-else? statement) (interpret-statement (get-else statement) environment return break continue throw))
       (else environment))))
 
+
 ; Interprets a while loop.  We must create break and continue continuations for this loop
 (define interpret-while
   (lambda (statement environment return throw)
@@ -98,7 +104,7 @@
 ; We use a continuation to throw the proper value. Because we are not using boxes, the environment/state must be thrown as well so any environment changes will be kept
 (define interpret-throw
   (lambda (statement environment throw)
-    (throw (box (eval-expression (get-expr statement) environment throw)) environment)))
+    (throw (box (eval-expression (get-expr statement) environment throw)) (push-frame (unbox throwenv)))))
 
 ; Interpret a try-catch-finally block
 
@@ -131,8 +137,7 @@
               (new-return (lambda (v) (begin (interpret-block finally-block environment return break continue throw) (return v))))
               (new-break (lambda (env) (break (interpret-block finally-block env return break continue throw))))
               (new-continue (lambda (env) (continue (interpret-block finally-block env return break continue throw))))
-              (new-throw (create-throw-catch-continuation (get-catch statement) environment return break continue throw jump finally-block)))
-         (interpret-block finally-block
+              (new-throw (create-throw-catch-continuation (get-catch statement) environment return break continue throw jump finally-block)))(interpret-block finally-block
                           (interpret-block try-block environment new-return new-break new-continue new-throw)
                           return break continue throw))))))
 
@@ -159,9 +164,6 @@
       ((eq? 'funcall (operator expr)) (eval-funcall expr environment throw)) ; interpret-funcall is not implemented yet
       (else (eval-operator expr environment throw)))))
 
-; Evaluate a binary (or unary) operator.  Although this is not dealing with side effects, I have the routine evaluate the left operand first and then
-; pass the result to eval-binary-op2 to evaluate the right operand.  This forces the operands to be evaluated in the proper order in case you choose
-; to add side effects to the interpreter
 (define eval-operator
   (lambda (expr environment throw)
     (cond
@@ -214,6 +216,8 @@
   (lambda (statement)
     (not (null? (cdddr statement)))))
 
+(define throwenv (box '()))
+
 ; these helper functions define the parts of the various statement types
 (define statement-type operator)
 (define get-expr operand1)
@@ -243,6 +247,7 @@
 ; Function helper methods
 ;;;;;;;;;;;;;;;;;;;;;;;;;
 
+; Defines the main method call
 (define main-method '(funcall main))
 
 (define function-body
@@ -257,27 +262,39 @@
   (lambda (statement environment)
     (car (lookup (cadr statement) environment))))
 
+; Evaluates the parameters
 (define parameter-values
   (lambda (parameters environment throw)
     (if (null? parameters)
          '()
          (cons (box (eval-expression (car parameters) environment throw)) (parameter-values (cdr parameters) environment throw)))))
 
+; Creates frame where the names are parameter names and values are parameter values
 (define function-frame
   (lambda (statement environment throw)
     (if (matching-parameters? (parameter-names statement environment) (parameter-values (parameters statement) environment throw))
       (cons (parameter-names statement environment) (cons (parameter-values (parameters statement) environment throw) '()))
       (myerror "Mismatched paramters"))))
 
+; Gets the static link for a function
+(define get-static-link
+  (lambda (name environment)
+    (cond
+      ((null? environment) (myerror "function not found: " name)) 
+      ((exists-in-list? name (caar environment)) environment)
+      (else (get-static-link name (pop-frame environment))))))
+
+; Verifies that the parameter count matches the function call
 (define matching-parameters?
   (lambda (names values)
     (if (null? names)
       (null? values)
       (matching-parameters? (cdr names) (cdr values)))))
 
+; Returns the function frame and the environment of the static link
 (define push-function-frame
   (lambda (statement environment throw)
-    (cons (function-frame statement environment throw) environment)))
+    (cons (function-frame statement environment throw) (get-static-link (cadr statement) environment))))
 
 ;------------------------
 ; Environment/State Functions
