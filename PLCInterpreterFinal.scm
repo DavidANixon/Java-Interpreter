@@ -15,7 +15,7 @@
 
 ; interprets a list of statements.  The environment from each statement is used for the next ones.
 (define interpret-statement-list
-  (lambda (statement-list environment return break continue throw true-type instance)
+  (lambda (statement-list environment return break continue throw true-type instance)not
     (if (null? statement-list)
         environment
         (interpret-statement-list (cdr statement-list) (interpret-statement (car statement-list) environment return break continue throw true-type instance) return break continue throw true-type instance))))
@@ -26,7 +26,7 @@
     (cond
       ((eq? 'class (statement-type statement)) (interpret-class statement environment true-type instance))
       ((eq? 'return (statement-type statement)) (interpret-return statement environment return throw true-type instance))
-      ((eq? 'function (statement-type statement)) (interpret-function statement environment))
+      ((eq? 'function (statement-type statement)) (interpret-function statement environment true-type instance))
       ((eq? 'funcall (statement-type statement)) (interpret-funcall (eval-funcall statement environment throw true-type instance) environment))
       ((eq? 'var (statement-type statement)) (interpret-declare statement environment throw true-type instance))
       ((eq? '= (statement-type statement)) (interpret-assign statement environment throw true-type instance))
@@ -44,15 +44,15 @@
 (define interpret-constructor 
   (lambda (statement environment true-type instance)
     (cond
-      ((exists? (cadr statement) true-type instance) (insert ( (boxlist (cadaddr (lookup (cadr statement))))))
-      (else (error "Type not declared"))))))
+      ((exists? (cadr statement) true-type instance) (insert ((boxlist (cadaddr (lookup (cadr statement)))))))
+      (else (error "Type not declared")))))
 
 ;helper method for boxing every atom in a list
 (define boxlist
   (lambda (list)
     (cond
       ((null? list) '())
-      (else (cons (box (car list)) (boxlist (cdr list)))))))
+      (else (cons (box (car list)) (boxlist (cdr list))))))) ;should this be set-box! instead of "box" ?
     
 ; Executes the function then returns the state
 (define interpret-funcall
@@ -64,33 +64,34 @@
   (lambda (statement environment throw true-type instance)
     (call/cc
       (lambda (return)
-        (interpret-statement-list (function-body statement environment) (push-function-frame statement environment throw) return invalid-break invalid-continue throw true-type instance)))))
+        (interpret-statement-list (function-body statement environment) (push-function-frame statement environment throw instance) return invalid-break invalid-continue throw true-type instance)))))
 
 ;Creates a new class closure based on the current class fields and functions, and those of all superclasses
 (define interpret-class
   (lambda (statement environment true-type instance)
-    (insert (cadr statement) (interpret-class-super statement '((()())(()())) environment true-type instance) environment )))
+    (insert (cadr statement) (interpret-class-super statement '((()())(()())) environment (cadr statement) instance) environment )))
             
 (define interpret-class-super
   (lambda (statement closure environment true-type instance)
     (if (null? (caddr statement))
-        (cons '() (cons (car (class-closure-list (cadddr statement) closure)) (cadr (class-closure-list (cadddr statement) closure   ))))
-        (cons (cadr (caddr statement)) (cons (car (class-closure-list (cadddr statement) (cdr (lookup (cadr (caddr statement)) environment true-type instance) )))
-                                             (cadr (class-closure-list (cadddr statement) (cdr (lookup (cadr (caddr statement)) environment true-type instance))   )))))))
+        (cons '() (cons (car (class-closure-list (cadddr statement) closure true-type instance)) (cadr (class-closure-list (cadddr statement) closure true-type instance))))
+        (cons (cadr (caddr statement)) (cons (car (class-closure-list (cadddr statement) (cdr (lookup (cadr (caddr statement)) environment true-type instance)) true-type instance))
+                                             (cadr (class-closure-list (cadddr statement) (cdr (lookup (cadr (caddr statement)) environment true-type instance)) true-type instance))))))) 
+
 
 (define class-closure-list
-  (lambda (statement-list closure)
+  (lambda (statement-list closure true-type instance)
      (if (null? statement-list)
          closure
-        (class-closure-list (cdr statement-list) (class-closure-statement (car statement-list) closure)))))
+        (class-closure-list (cdr statement-list) (class-closure-statement (car statement-list) closure true-type instance) true-type instance))))
+
 
 (define class-closure-statement
-  (lambda (statement closure)
+  (lambda (statement closure true-type instance)
     (cond
       ((or (eq? 'function (statement-type statement)) (eq? 'static-function (statement-type statement)))
-       (insert-func-closure (get-function-name statement) (get-function-closure statement) closure))
+       (insert-func-closure (get-function-name statement) (get-function-closure statement true-type) closure))
       ((or (eq? 'var (statement-type statement)) (eq? 'static-var (statement-type statement))) (insert-var (cadr statement) (caddr statement) closure)   ))))
-
 
 (define insert-func-closure
   (lambda (name func closure)
@@ -107,10 +108,10 @@
   (lambda (statement environment return throw true-type instance)
     (return (eval-expression (get-expr statement) environment throw true-type instance true-type instance))))
 
-; Adds the function binding to the environment.
+; Adds the function binding to the environment
 (define interpret-function
-  (lambda (statement environment)
-    (insert (get-function-name statement) (get-function-closure statement) environment)))
+  (lambda (statement environment true-type instance)
+    (insert (get-function-name statement) (get-function-closure statement true-type) environment)))
 
 
 ; Adds a new variable binding to the environment.  There may be an assignment with the variable
@@ -278,8 +279,8 @@
 (define get-expr operand1)
 (define get-function-name operand1)
 (define get-function-closure
-  (lambda (statement)
-    (cons (operand2 statement) (cons (operand3 statement) '()))))
+  (lambda (statement class)
+    (cons (cons 'this (operand2 statement)) (cons (operand3 statement) (list class)))))
 (define get-declare-var operand1)
 (define get-declare-value operand2)
 (define exists-declare-value? exists-operand2?)
@@ -310,8 +311,8 @@
     (cadr (lookup (cadr statement) environment))))
 
 (define parameters
-  (lambda (statement)
-    (cddr statement)))
+  (lambda (statement instance)
+    (cons (instance (cddr statement)))))
 
 (define parameter-names
   (lambda (statement environment)
@@ -319,16 +320,16 @@
 
 ; Evaluates the parameters
 (define parameter-values
-  (lambda (parameters environment throw)
+  (lambda (parameters environment throw instance)
     (if (null? parameters)
          '()
          (cons (box (eval-expression (car parameters) environment throw)) (parameter-values (cdr parameters) environment throw)))))
 
 ; Creates frame where the names are parameter names and values are parameter values
 (define function-frame
-  (lambda (statement environment throw)
-    (if (matching-parameters? (parameter-names statement environment) (parameter-values (parameters statement) environment throw))
-      (cons (parameter-names statement environment) (cons (parameter-values (parameters statement) environment throw) '()))
+  (lambda (statement environment throw instance)
+    (if (matching-parameters? (parameter-names statement environment) (parameter-values (parameters statement instance) environment throw))
+      (cons (parameter-names statement environment) (cons (parameter-values (parameters statement instance) environment throw) '()))
       (myerror "Mismatched paramters"))))
 
 ; Gets the static link for a function
@@ -349,7 +350,7 @@
 ; Returns the function frame and the environment of the static link
 (define push-function-frame
   (lambda (statement environment throw)
-    (cons (function-frame statement environment throw) (get-static-link (cadr statement) environment))))
+    (cons (function-frame statement environment throw instance) (get-static-link (cadr statement) environment))))
 
 ;------------------------
 ; Environment/State Functions
