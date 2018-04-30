@@ -1,7 +1,7 @@
 ; If you are using racket instead of scheme, uncomment these two lines, comment the (load "simpleParser.scm") and uncomment the (require "simpleParser.scm")
 ; #lang racket
 ; (require "simpleParser.scm")
-(load "functionParser.scm")
+(load "classParser.scm")
 
 ; The functions that start interpret-...  all return the current environment.
 ; The functions that start eval-...  all return a value
@@ -10,7 +10,8 @@
 (define interpret
   (lambda (file)
     (scheme->language
-     (eval-funcall main-method (interpret-statement-list (parser file) (newenvironment) invalid-return invalid-break invalid-continue invalid-throw) invalid-throw))))
+     ;(eval-funcall main-method
+     (interpret-statement-list (parser file) (newenvironment) invalid-return invalid-break invalid-continue invalid-throw) ))) ; invalid-throw))))
 
 ; interprets a list of statements.  The environment from each statement is used for the next ones.
 (define interpret-statement-list
@@ -23,6 +24,7 @@
 (define interpret-statement
   (lambda (statement environment return break continue throw)
     (cond
+      ((eq? 'class (statement-type statement)) (interpret-class statement environment))
       ((eq? 'return (statement-type statement)) (interpret-return statement environment return throw))
       ((eq? 'function (statement-type statement)) (interpret-function statement environment))
       ((eq? 'funcall (statement-type statement)) (interpret-funcall (eval-funcall statement environment throw) environment))
@@ -49,6 +51,42 @@
       (lambda (return)
         (interpret-statement-list (function-body statement environment) (push-function-frame statement environment throw) return invalid-break invalid-continue throw)))))
 
+;Creates a new class closure based on the current class fields and functions, and those of all superclasses
+(define interpret-class
+  (lambda (statement environment)
+    (insert (cadr statement) (interpret-class-super statement '((()())(()())) environment) environment )))
+            
+(define interpret-class-super
+  (lambda (statement closure environment)
+    (if (null? (caddr statement))
+        (cons '() (cons (car (class-closure-list (cadddr statement) closure)) (cadr (class-closure-list (cadddr statement) closure   ))))
+        (cons (cadr (caddr statement)) (cons (car (class-closure-list (cadddr statement) (cdr (lookup (cadr (caddr statement)) environment))))
+                                             (cadr (class-closure-list (cadddr statement) (cdr (lookup (cadr (caddr statement)) environment))   )))))))
+
+(define class-closure-list
+  (lambda (statement-list closure)
+     (if (null? statement-list)
+         closure
+        (class-closure-list (cdr statement-list) (class-closure-statement (car statement-list) closure)))))
+
+(define class-closure-statement
+  (lambda (statement closure)
+    (cond
+      ((or (eq? 'function (statement-type statement)) (eq? 'static-function (statement-type statement)))
+       (insert-func-closure (get-function-name statement) (get-function-closure statement) closure))
+      ((or (eq? 'var (statement-type statement)) (eq? 'static-var (statement-type statement))) (insert-var (cadr statement) (caddr statement) closure)   ))))
+
+
+(define insert-func-closure
+  (lambda (name func closure)
+    (cons (cons (cons name (caar closure)) (list (cons func (cadar closure)))) (list (cdr closure)))))
+
+(define insert-var
+  (lambda (name value closure)
+    (cons (car closure) (list (cons (cons name (caadr closure)) (list (cons value (cadadr closure))))))))
+ 
+
+     
 ; Calls the return continuation with the given expression value
 (define interpret-return
   (lambda (statement environment return throw)
@@ -58,6 +96,7 @@
 (define interpret-function
   (lambda (statement environment)
     (insert (get-function-name statement) (get-function-closure statement) environment)))
+
 
 ; Adds a new variable binding to the environment.  There may be an assignment with the variable
 (define interpret-declare
