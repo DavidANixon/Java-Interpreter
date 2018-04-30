@@ -39,6 +39,21 @@
       ((eq? 'try (statement-type statement)) (begin (set-box! throwenv environment)(interpret-try statement environment return break continue throw)))
       (else (myerror "Unknown statement:" (statement-type statement))))))
 
+
+; adds instance of class to state
+(define interpret-constructor
+  (lambda (statement environment)
+    (cond
+      ((exists? (cadr statement)) (insert ( (boxlist (cadaddr (lookup (cadr statement))))))
+      (else (error "Type not declared"))))))
+
+;helper method for boxing every atom in a list
+(define boxlist
+  (lambda (list)
+    (cond
+      ((null? list) '())
+      (else (cons (box (car list)) (boxlist (cdr list)))))))
+    
 ; Executes the function then returns the state
 (define interpret-funcall
   (lambda (function environment)
@@ -89,8 +104,8 @@
      
 ; Calls the return continuation with the given expression value
 (define interpret-return
-  (lambda (statement environment return throw)
-    (return (eval-expression (get-expr statement) environment throw))))
+  (lambda (statement environment return throw true-type instance)
+    (return (eval-expression (get-expr statement) environment throw true-type instance))))
 
 ; Adds the function binding to the environment.
 (define interpret-function
@@ -194,14 +209,15 @@
 
 ; Evaluates all possible boolean and arithmetic expressions, including constants and variables.
 (define eval-expression
-  (lambda (expr environment throw)
+  (lambda (expr environment throw true-type instance)
     (cond
       ((number? expr) expr)
       ((eq? expr 'true) #t)
       ((eq? expr 'false) #f)
-      ((not (list? expr)) (unbox (lookup expr environment)))
-      ((eq? 'funcall (operator expr)) (eval-funcall expr environment throw)) ; interpret-funcall is not implemented yet
-      (else (eval-operator expr environment throw)))))
+      ((not (list? expr)) (unbox (lookup expr environment))) ;for evalaluating variables
+      ((eq? 'new (cadr expr)) (interpret-constructor expr environment true-type instance))
+      ((eq? 'funcall (operator expr)) (eval-funcall expr environment throw true-type instance)) ; interpret-funcall is not implemented yet
+      (else (eval-operator expr environment throw true-type instance)))))
 
 (define eval-operator
   (lambda (expr environment throw)
