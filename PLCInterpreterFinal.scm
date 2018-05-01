@@ -1,3 +1,6 @@
+; David Nixon
+; Jeremy Novak
+
 ; If you are using racket instead of scheme, uncomment these two lines, comment the (load "simpleParser.scm") and uncomment the (require "simpleParser.scm")
 ; #lang racket
 ; (require "simpleParser.scm")
@@ -11,6 +14,13 @@
   (lambda (file main-class)
     (scheme->language
      (eval-main-method main-class (interpret-statement-list (parser file) (newenvironment) invalid-return invalid-break invalid-continue invalid-throw main-class '())  main-class '())))) 
+
+(define eval-main-method
+  (lambda (class-name environment true-type instance)
+    (call/cc
+      (lambda (return)
+        (interpret-statement-list (cadr (dot-lookup-function 'main (caadr (lookup class-name environment true-type instance)) (cadadr (lookup class-name environment true-type instance)) true-type instance))  
+                                  environment return invalid-break invalid-continue invalid-throw true-type (lookup true-type environment true-type instance))))))  
 
 ; interprets a list of statements.  The environment from each statement is used for the next ones.
 (define interpret-statement-list
@@ -43,16 +53,8 @@
 (define interpret-constructor 
   (lambda (statement environment true-type instance)
     (cond
-      ((exists? (cadr statement) true-type instance) (insert ((boxlist (cadaddr (lookup (cadr statement)))))))
+      ((exists? (cadr statement) environment true-type instance)  (boxlist (cadr (caddr (lookup (cadr statement) environment true-type instance)))) environment)
       (else (error "Type not declared")))))
-
-
-(define eval-main-method
-  (lambda (class-name environment true-type instance)
-    (call/cc
-      (lambda (return)
-        (interpret-statement-list (cadr (dot-lookup-function 'main (caadr (lookup class-name environment true-type instance)) (cadadr (lookup class-name environment true-type instance)) true-type instance))  
-                                  environment return invalid-break invalid-continue invalid-throw true-type (lookup true-type environment true-type instance))))))  
 
 ;helper method for boxing every atom in a list
 (define boxlist
@@ -74,18 +76,24 @@
         (interpret-statement-list (function-body statement environment true-type instance) (push-function-frame statement environment throw true-type instance) return invalid-break invalid-continue throw
                                   (new-type statement environment true-type instance) (lookup (cadr statement)) )))))
 
-;Creates a new class closure based on the current class fields and functions, and those of all superclasses
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;Class Closure Functions;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+; Creates a new class closure based on the current class fields and functions, and those of all superclasses
 (define interpret-class
   (lambda (statement environment true-type instance)
     (insert (cadr statement) (interpret-class-super statement '((()())(()())) environment (cadr statement) instance) environment )))
-            
+
+; creates the closure of a class
+; the first case is if the class does not have a parent class to inherit from
+; the second case adds the functions and fields of the new class to the functions and fields it is inheriting from the parent class
 (define interpret-class-super
   (lambda (statement closure environment true-type instance)
     (if (null? (caddr statement))
         (cons '() (cons (car (class-closure-list (cadddr statement) closure true-type instance)) (cadr (class-closure-list (cadddr statement) closure true-type instance))))
         (cons (cadr (caddr statement)) (cons (car (class-closure-list (cadddr statement) (cdr (lookup (cadr (caddr statement)) environment true-type instance)) true-type instance))
-                                             (cadr (class-closure-list (cadddr statement) (cdr (lookup (cadr (caddr statement)) environment true-type instance)) true-type instance))))))) 
-
+                                             (list (cadr (class-closure-list (cadddr statement) (cdr (lookup (cadr (caddr statement)) environment true-type instance)) true-type instance)))))))) 
 
 (define class-closure-list
   (lambda (statement-list closure true-type instance)
@@ -93,7 +101,7 @@
          closure
         (class-closure-list (cdr statement-list) (class-closure-statement (car statement-list) closure true-type instance) true-type instance))))
 
-
+;because we are not handling the the extra challenge of static functions and variables, we handle them the same
 (define class-closure-statement
   (lambda (statement closure true-type instance)
     (cond
@@ -101,6 +109,8 @@
        (insert-func-closure (get-function-name statement) (get-function-closure statement true-type) closure))
       ((or (eq? 'var (statement-type statement)) (eq? 'static-var (statement-type statement))) (insert-var (cadr statement) (caddr statement) closure)   ))))
 
+
+;the next two functions separate the functions and fields within classes
 (define insert-func-closure
   (lambda (name func closure)
     (cons (cons (cons name (caar closure)) (list (cons func (cadar closure)))) (list (cdr closure)))))
@@ -223,6 +233,7 @@
       ((number? expr) expr)
       ((eq? expr 'true) #t)
       ((eq? expr 'false) #f)
+      ((eq? (operator expr) 'new) (interpret-constructor expr environment true-type instance))
       ((not (list? expr)) (unbox (lookup expr environment true-type instance))) ;for evalaluating variables
       ((eq? 'new (cadr expr)) (interpret-constructor expr environment))
       ((eq? 'funcall (operator expr)) (eval-funcall expr environment throw true-type instance)) ; interpret-funcall is not implemented yet
