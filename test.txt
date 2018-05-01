@@ -1,10 +1,7 @@
 class A {
   var x = 22;
-  static function sdalfj() {
-    return 5;
+  static function main(v) {
+    return this.x;
   }
 }
 
-class B extends A{
-   var y = 1;
-}

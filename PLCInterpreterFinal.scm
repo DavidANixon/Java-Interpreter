@@ -8,14 +8,13 @@
 
 ; The main function.  Calls parser to get the parse tree and interprets it with a new environment.  The returned value is in the environment.
 (define interpret
-  (lambda (file)
+  (lambda (file main-class)
     (scheme->language
-     ;(eval-funcall main-method
-     (interpret-statement-list (parser file) (newenvironment) invalid-return invalid-break invalid-continue invalid-throw '() '())))) 
+     (eval-main-method main-class (interpret-statement-list (parser file) (newenvironment) invalid-return invalid-break invalid-continue invalid-throw main-class '())  main-class '())))) 
 
 ; interprets a list of statements.  The environment from each statement is used for the next ones.
 (define interpret-statement-list
-  (lambda (statement-list environment return break continue throw true-type instance)not
+  (lambda (statement-list environment return break continue throw true-type instance)
     (if (null? statement-list)
         environment
         (interpret-statement-list (cdr statement-list) (interpret-statement (car statement-list) environment return break continue throw true-type instance) return break continue throw true-type instance))))
@@ -47,6 +46,14 @@
       ((exists? (cadr statement) true-type instance) (insert ((boxlist (cadaddr (lookup (cadr statement)))))))
       (else (error "Type not declared")))))
 
+
+(define eval-main-method
+  (lambda (class-name environment true-type instance)
+    (call/cc
+      (lambda (return)
+        (interpret-statement-list (cadr (dot-lookup-function 'main (caadr (lookup class-name environment true-type instance)) (cadadr (lookup class-name environment true-type instance)) true-type instance))  
+                                  environment return invalid-break invalid-continue invalid-throw true-type (lookup true-type environment true-type instance))))))  
+
 ;helper method for boxing every atom in a list
 (define boxlist
   (lambda (list)
@@ -64,7 +71,8 @@
   (lambda (statement environment throw true-type instance)
     (call/cc
       (lambda (return)
-        (interpret-statement-list (function-body statement environment) (push-function-frame statement environment throw instance) return invalid-break invalid-continue throw true-type instance)))))
+        (interpret-statement-list (function-body statement environment true-type instance) (push-function-frame statement environment throw true-type instance) return invalid-break invalid-continue throw
+                                  (new-type statement environment true-type instance) (lookup (cadr statement)) )))))
 
 ;Creates a new class closure based on the current class fields and functions, and those of all superclasses
 (define interpret-class
@@ -106,7 +114,7 @@
 ; Calls the return continuation with the given expression value
 (define interpret-return
   (lambda (statement environment return throw true-type instance)
-    (return (eval-expression (get-expr statement) environment throw true-type instance true-type instance))))
+    (return (eval-expression (get-expr statement) environment throw true-type instance))))
 
 ; Adds the function binding to the environment
 (define interpret-function
@@ -218,7 +226,37 @@
       ((not (list? expr)) (unbox (lookup expr environment true-type instance))) ;for evalaluating variables
       ((eq? 'new (cadr expr)) (interpret-constructor expr environment))
       ((eq? 'funcall (operator expr)) (eval-funcall expr environment throw true-type instance)) ; interpret-funcall is not implemented yet
+      ((eq? 'dot (operator expr)) (dot-lookup-field-obj expr environment throw true-type instance))
       (else (eval-operator expr environment throw true-type instance)))))
+
+(define dot-lookup-field-obj ;takes the expr "(dot objname varname)" and returns the value of the var
+  (lambda (expr environment throw true-type instance)
+    (if (eq? (cadr expr) 'this)
+        (dot-lookup-field (caddr expr) (car (caddr (lookup true-type environment true-type instance))) (cadr (caddr instance)) throw true-type instance)
+        (dot-lookup-field (caddr expr) (car (caddr (lookup (car (lookup (cadr expr) environment true-type instance)) environment true-type instance))) (cadr (lookup (cadr expr) environment true-type instance))  environment throw true-type instance))))
+
+(define dot-lookup-field
+  (lambda (var-name class-field-names obj-field-values throw true-type instance)
+    (cond
+      ((> (length obj-field-values) (length class-field-names) ) (dot-lookup-field var-name class-field-names (cdr obj-field-values) throw true-type instance))
+      ((null? obj-field-values) (myerror "Field not found:" var-name))
+      ((eq? var-name (car class-field-names)) (car obj-field-values))
+      (else (dot-lookup-field var-name (cdr class-field-names) (cdr obj-field-values) throw true-type instance)))))
+
+
+(define dot-lookup-function-obj ;takes the expr "(dot objname funcname)" and returns the function closure
+  (lambda (expr environment true-type instance)
+    (if (eq? (cadr expr) 'this)
+        (dot-lookup-function (caddr expr) (caadr (lookup true-type environment true-type instance)) (cadadr (lookup true-type environment true-type instance))  true-type instance)   
+        (dot-lookup-function (caddr expr) (caadr (lookup (car (lookup (cadr expr) environment true-type instance)) environment true-type instance))
+                             (cadadr (lookup (car (lookup (cadr expr) environment true-type instance)) environment true-type instance)) true-type instance))))
+
+(define dot-lookup-function
+  (lambda (name func-names func-values  true-type instance)
+    (cond
+      ((null? func-names) (myerror "Function not found:" name))
+      ((eq? name (car func-names)) (car func-values))
+      (else (dot-lookup-function name (cdr func-names) (cdr func-values) true-type instance)))))
 
 (define eval-operator
   (lambda (expr environment throw true-type instance)
@@ -307,16 +345,20 @@
 (define main-method '(funcall main))
 
 (define function-body
-  (lambda (statement environment)
-    (cadr (lookup (cadr statement) environment))))
+  (lambda (statement environment true-type instance)
+    (cadr (dot-lookup-function (cadr statement) environment true-type instance))))
 
 (define parameters
   (lambda (statement instance)
     (cons (instance (cddr statement)))))
 
 (define parameter-names
-  (lambda (statement environment)
-    (car (lookup (cadr statement) environment))))
+  (lambda (statement environment true-type instance)
+    (car (dot-lookup-function (cadr statement) environment true-type instance))))
+
+(define new-type
+  (lambda (statement environment true-type instance)
+    (caddr (dot-lookup-function (cadr statement) environment true-type instance))))
 
 ; Evaluates the parameters
 (define parameter-values
@@ -327,9 +369,9 @@
 
 ; Creates frame where the names are parameter names and values are parameter values
 (define function-frame
-  (lambda (statement environment throw instance)
-    (if (matching-parameters? (parameter-names statement environment) (parameter-values (parameters statement instance) environment throw))
-      (cons (parameter-names statement environment) (cons (parameter-values (parameters statement instance) environment throw) '()))
+  (lambda (statement environment throw true-type instance)
+    (if (matching-parameters? (parameter-names statement environment true-type instance) (parameter-values (parameters statement instance) environment throw))
+      (cons (parameter-names statement environment true-type instance) (cons (parameter-values (parameters statement instance) environment throw) '()))
       (myerror "Mismatched paramters"))))
 
 ; Gets the static link for a function
@@ -349,8 +391,8 @@
 
 ; Returns the function frame and the environment of the static link
 (define push-function-frame
-  (lambda (statement environment throw)
-    (cons (function-frame statement environment throw instance) (get-static-link (cadr statement) environment))))
+  (lambda (statement environment throw true-type instance)
+    (cons (function-frame statement environment throw true-type instance) (get-static-link (cadr statement) environment))))
 
 ;------------------------
 ; Environment/State Functions
@@ -535,4 +577,4 @@
                             (makestr (string-append str (string-append " " (symbol->string (car vals)))) (cdr vals))))))
       (error-break (display (string-append str (makestr "" vals)))))))
 
-(interpret "test.txt")
+(interpret "test.txt" 'A)
